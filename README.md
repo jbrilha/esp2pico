@@ -41,7 +41,7 @@ Also recommend installing ```picotool```
 mkdir ~/FreeRTOS/
 cd ~/FreeRTOS
 
-git clone --depth=1 https://github.com/FreeRTOS/FreeRTOS.git
+git clone --depth=1 https://github.com/raspberrypi/FreeRTOS-Kernel.git
 
 echo "export FREERTOS_KERNEL_PATH=~/FreeRTOS/FreeRTOS-Kernel/" >> ~/.bashrc
 ```
