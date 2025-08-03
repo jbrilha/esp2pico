@@ -1,67 +1,209 @@
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_wifi.h"
 #include "esp_event.h"
-#include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_wifi.h"
+#include "esp_wifi_types_generic.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
+#include "freertos/projdefs.h"
+#include "freertos/task.h"
+#include "lwip/inet.h"
+#include "lwip/sockets.h"
+#include "nvs_flash.h"
 
-#define WIFI_SSID "aa"
-#define WIFI_PASS "bb"
-#define PICO_IP "cc"
-#define PICO_PORT 8080
+#define MAX_MSG_SIZE 128
+#define MAX_PEERS 5
 
-static const char *TAG = "UDP_SENDER";
+#define WIFI_SSID "ESP32_AP"
+#define WIFI_PASS "superSafeAP"
 
-static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                               int32_t event_id, void* event_data)
-{
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        esp_wifi_connect();
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ESP_LOGI(TAG, "Wi-Fi connected!");
+#define UDP_PORT 8080
+
+#define UDP_SERVER_TASK_STACK_SIZE 4096
+#define UDP_RECEIVER_TASK_STACK_SIZE 4096
+#define UDP_SENDER_TASK_STACK_SIZE 2048
+
+#define UDP_SERVER_TASK_PRIORITY 5
+#define UDP_RECEIVER_TASK_PRIORITY 4
+#define UDP_SENDER_TASK_PRIORITY 3
+
+static const char *TAG = "ESP32";
+
+typedef struct {
+    struct sockaddr_in addr;
+    uint32_t last_seen;
+} peer_t;
+
+typedef struct {
+    peer_t peers[MAX_PEERS];
+    uint8_t count;
+    SemaphoreHandle_t mutex;
+} active_peers_t;
+
+active_peers_t active_peers;
+
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_START) {
+        ESP_LOGI(TAG, "AP started");
+    } else if (event_base == WIFI_EVENT &&
+               event_id == WIFI_EVENT_AP_STACONNECTED) {
+        ESP_LOGI(TAG, "station connected to AP");
+    } else if (event_base == WIFI_EVENT &&
+               event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        ESP_LOGI(TAG, "station disconnected from AP");
     }
 }
 
-void wifi_init(void)
-{
+void wifi_init(void) {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    esp_netif_create_default_wifi_ap();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL);
-    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL);
+    esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                               &wifi_event_handler, NULL);
 
     wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASS,
-        },
+        .ap = {.ssid = WIFI_SSID,
+               .ssid_len = strlen(WIFI_SSID),
+               .password = WIFI_PASS,
+               .max_connection = MAX_PEERS,
+               .authmode = WIFI_AUTH_WPA_WPA2_PSK},
     };
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
-void udp_sender_task(void *pvParameters)
-{
-    int sock;
-    struct sockaddr_in dest_addr;
-    
-    // wait for Wi-Fi connection
+void udp_sender_task(void *pvParameters) {
+    int sock = *(int *)pvParameters;
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    int msg_count = 0;
+    while (true) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Hello from ESP32 #%d", msg_count++);
+
+        peer_t peers_copy[MAX_PEERS];
+        int peer_count = 0;
+
+        if (xSemaphoreTake(active_peers.mutex, pdMS_TO_TICKS(50))) {
+            peer_count = active_peers.count;
+            memcpy(peers_copy, active_peers.peers, sizeof(peer_t) * peer_count);
+            xSemaphoreGive(active_peers.mutex);
+        }
+
+        // send without holding mutex
+        for (int i = 0; i < peer_count; i++) {
+            if (sendto(sock, msg, strlen(msg), 0,
+                       (struct sockaddr *)&peers_copy[i].addr,
+                       sizeof(peers_copy[i].addr)) > 0) {
+                ESP_LOGI(TAG, "sent: %s", msg);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
+// this one should only (!!) be called in betwen taking and giving the mutex
+static bool peer_exists_unsafe(const struct sockaddr_in *peer_addr) {
+    peer_t peer;
+    for (int i = 0; i < active_peers.count; i++) {
+        peer = active_peers.peers[i];
+
+        if (peer.addr.sin_addr.s_addr == peer_addr->sin_addr.s_addr &&
+            peer.addr.sin_port == peer_addr->sin_port) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool peer_exists(const struct sockaddr_in *peer_addr) {
+    bool exists = false;
+
+    if (xSemaphoreTake(active_peers.mutex, pdMS_TO_TICKS(100))) { // 100 ms
+        exists = peer_exists_unsafe(peer_addr);
+        xSemaphoreGive(active_peers.mutex);
+    }
+
+    return exists;
+}
+
+bool add_peer(const struct sockaddr_in *peer_addr) {
+    bool res = false;
+
+    if (xSemaphoreTake(active_peers.mutex, pdMS_TO_TICKS(100))) { // 100 ms
+        if (peer_exists_unsafe(peer_addr)) {
+            res = true;
+        } else if (active_peers.count < MAX_PEERS) {
+
+            active_peers.peers[active_peers.count] = (peer_t){
+                .addr = *peer_addr,
+                .last_seen = xTaskGetTickCount(),
+            };
+
+            active_peers.count++;
+            res = true;
+        }
+
+        xSemaphoreGive(active_peers.mutex);
+    }
+
+    return res;
+}
+
+void udp_receiver_task(void *pvParameters) {
+    int sock = *(int *)pvParameters;
+
+    struct sockaddr_in src_in;
+    struct sockaddr *src = (struct sockaddr *)&src_in;
+    socklen_t slen = sizeof(src_in);
+
     vTaskDelay(pdMS_TO_TICKS(5000));
-    
+
+    char rx_buf[MAX_MSG_SIZE];
+
+    int len;
+    while (true) {
+        len = recvfrom(sock, rx_buf, sizeof(rx_buf), 0, src, &slen);
+
+        if (len > 0) {
+            rx_buf[len] = '\0';
+            char peer_ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &src_in.sin_addr, peer_ip, INET_ADDRSTRLEN);
+
+            ESP_LOGI(TAG, "RX [%s:%d]: %s", peer_ip, ntohs(src_in.sin_port),
+                     rx_buf);
+
+            if (add_peer(&src_in)) {
+                ESP_LOGI(TAG, "added peer");
+            } else {
+                ESP_LOGW(TAG, "failed to add peer");
+            }
+        }
+    }
+}
+
+void udp_server_task(void *pvParameters) {
+    int sock;
+    struct sockaddr_in bind_addr;
+    socklen_t slen = sizeof(bind_addr);
+
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
     sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (sock < 0) {
         ESP_LOGE(TAG, "failed to create socket");
@@ -69,32 +211,40 @@ void udp_sender_task(void *pvParameters)
         return;
     }
 
-    dest_addr.sin_addr.s_addr = inet_addr(PICO_IP);
-    dest_addr.sin_family = AF_INET;
-    dest_addr.sin_port = htons(PICO_PORT);
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = htons(UDP_PORT);
+    bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    int msg_count = 0;
-    while (1) {
-        char message[64];
-        snprintf(message, sizeof(message), "Hello from ESP32 #%d", msg_count++);
-        
-        int err = sendto(sock, message, strlen(message), 0, 
-                        (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-        if (err < 0) {
-            ESP_LOGE(TAG, "error sending: errno %d", errno);
-        } else {
-            ESP_LOGI(TAG, "sent: %s", message);
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(2000));
+    if (bind(sock, (struct sockaddr *)&bind_addr, slen) < 0) {
+        ESP_LOGE(TAG, "failed to bind socket");
+        close(sock);
+        vTaskDelete(NULL);
+        return;
     }
+
+    ESP_LOGI(TAG, "UDP server bound to port 8080");
+
+    xTaskCreate(udp_receiver_task, "udp_rx", UDP_RECEIVER_TASK_STACK_SIZE,
+                &sock, UDP_RECEIVER_TASK_PRIORITY, NULL);
+    xTaskCreate(udp_sender_task, "udp_tx", UDP_SENDER_TASK_STACK_SIZE, &sock,
+                UDP_SENDER_TASK_PRIORITY, NULL);
+
+    vTaskDelete(NULL);
 }
 
-void app_main(void)
-{
+void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
-    
+
+    active_peers.count = 0;
+    memset(active_peers.peers, 0, sizeof(active_peers.peers));
+    active_peers.mutex = xSemaphoreCreateMutex();
+    if (active_peers.mutex == NULL) {
+        ESP_LOGE(TAG, "failed to create peers mutex");
+        return;
+    }
+
     wifi_init();
-    
-    xTaskCreate(udp_sender_task, "udp_sender_task", 4096, NULL, 5, NULL);
+
+    xTaskCreate(udp_server_task, "udp_server", UDP_SERVER_TASK_STACK_SIZE, NULL,
+                UDP_SERVER_TASK_PRIORITY, NULL);
 }

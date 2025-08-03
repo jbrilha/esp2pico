@@ -21,8 +21,10 @@
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
 
-#define WIFI_SSID "aa"
-#define WIFI_PASSWORD "bb"
+#define WIFI_SSID "ESP32_AP"
+#define WIFI_PASS "superSafeAP"
+#define ESP32_IP "192.168.4.1" // default
+
 #define UDP_PORT 8080
 
 // Which core to run on if configNUMBER_OF_CORES==1
@@ -46,8 +48,72 @@ PicoScroll pico_scroll;
 void udp_receiver_task(void *pvParameters) {
     printf("UDP receiver task started\n");
     
+    int sock = *(int*)pvParameters;
+
+    struct sockaddr_in sender_addr;
+    socklen_t sender_len = sizeof(sender_addr);
+    char buffer[256];
+    
+    int len;
+    while (true) {
+        len = lwip_recvfrom(sock, buffer, sizeof(buffer)-1, 0,
+                           (struct sockaddr*)&sender_addr, &sender_len);
+        
+        if (len > 0) {
+            buffer[len] = '\0';
+            char sender_ip[16];
+            strcpy(sender_ip, inet_ntoa(sender_addr.sin_addr));
+            printf("received from %s: %s\n", sender_ip, buffer);
+        } else if (len < 0) {
+            printf("recvfrom error: %d\n", len);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+    
+    lwip_close(sock);
+}
+
+void udp_sender_task(void *pvParameters) {
+    printf("UDP sender task started\n");
+    
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    
+    int sock = *(int*)pvParameters;
+    struct sockaddr_in server_addr;
+    
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(UDP_PORT);
+    inet_aton(ESP32_IP, &server_addr.sin_addr);
+    
+    int msg_count = 0;
+    while (true) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Hello from Pico #%d", msg_count++);
+        
+        int sent = lwip_sendto(sock, msg, strlen(msg), 0,
+                              (struct sockaddr*)&server_addr, sizeof(server_addr));
+        
+        if (sent > 0) {
+            printf("sent: %s\n", msg);
+        } else {
+            printf("send failed: %d\n", sent);
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(3000));
+    }
+    
+    lwip_close(sock);
+}
+
+
+void udp_task(void *pvParameters) {
+    printf("UDP task started\n");
+    
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    
     int sock;
-    struct sockaddr_in local_addr, sender_addr;
+    struct sockaddr_in local_addr, server_addr, sender_addr;
     socklen_t sender_len = sizeof(sender_addr);
     char buffer[256];
     
@@ -70,22 +136,17 @@ void udp_receiver_task(void *pvParameters) {
         return;
     }
     
-    while (true) {
-        int bytes = lwip_recvfrom(sock, buffer, sizeof(buffer)-1, 0,
-                           (struct sockaddr*)&sender_addr, &sender_len);
-        
-        if (bytes > 0) {
-            buffer[bytes] = '\0';
-            char sender_ip[16];
-            strcpy(sender_ip, inet_ntoa(sender_addr.sin_addr));
-            printf("received from %s: %s\n", sender_ip, buffer);
-        } else if (bytes < 0) {
-            printf("recvfrom error: %d\n", bytes);
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-    }
+    printf("Pico bound to port 8080\n");
     
-    lwip_close(sock);
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(UDP_PORT);
+    inet_aton("192.168.4.1", &server_addr.sin_addr);
+    
+    xTaskCreate(udp_sender_task, "udp_tx", 1024, &sock, WORKER_TASK_PRIORITY, NULL);
+    xTaskCreate(udp_receiver_task, "udp_rx", 1024, &sock, WORKER_TASK_PRIORITY, NULL);
+    
+    vTaskDelete(NULL);
 }
 
 void wifi_connect_task(void *pvParameters) {
@@ -99,17 +160,17 @@ void wifi_connect_task(void *pvParameters) {
     
     cyw43_arch_enable_sta_mode();
     
-    if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASSWORD, 
+    if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASS, 
                                           CYW43_AUTH_WPA2_AES_PSK, 30000)) {
         printf("failed to connect to Wi-Fi\n");
         vTaskDelete(NULL);
         return;
     }
     
-    printf("connected to Wi-Fi!!!\n");
+    printf("connected to AP\n");
     printf("IP: %s\n", ip4addr_ntoa(netif_ip4_addr(netif_list)));
     
-    xTaskCreate(udp_receiver_task, "udp_task", 2048, NULL, WORKER_TASK_PRIORITY, NULL);
+    xTaskCreate(udp_task, "udp_task", 4096, NULL, WORKER_TASK_PRIORITY, NULL);
     
     // this task is done, can kill itself 
     vTaskDelete(NULL);
@@ -138,19 +199,7 @@ void main_task(__unused void *params) {
 
     xTaskCreate(wifi_connect_task, "wifi_task", 2048, NULL, WORKER_TASK_PRIORITY, NULL);
 
-
-    int count = 0;
-    while (true) {
-#if configNUMBER_OF_CORES > 1
-        static int last_core_id = -1;
-        if (portGET_CORE_ID() != last_core_id) {
-            last_core_id = portGET_CORE_ID();
-            printf("main task is on core %d\n", last_core_id);
-        }
-#endif
-        printf("Hello from main task count=%u\n", count++);
-        vTaskDelay(3000);
-    }
+    vTaskDelete(NULL);
 }
 
 void vLaunch(void) {
