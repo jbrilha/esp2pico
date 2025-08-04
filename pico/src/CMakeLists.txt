@@ -1,5 +1,10 @@
 add_executable(${PROJECT_NAME}
-    freertos_test.cpp
+    freertos_test.c
+)
+
+target_sources(freertos_test PRIVATE
+    tcp.c
+    udp.c
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
