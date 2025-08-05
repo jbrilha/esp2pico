@@ -1,11 +1,12 @@
+set(SHARED_SRCS tcp.c udp.c)
+
 if(DEFINED BUILD_PICO)
     add_executable(${PROJECT_NAME}
         pico_main.c
     )
 
     target_sources(${PROJECT_NAME} PRIVATE
-        tcp.c
-        udp.c
+        ${SHARED_SRCS}
     )
 
     target_include_directories(${PROJECT_NAME} PRIVATE
@@ -26,6 +27,6 @@ if(DEFINED BUILD_PICO)
 
     pico_add_extra_outputs(${PROJECT_NAME})
 else()
-    idf_component_register(SRCS "esp32_main.c" "tcp.c" "udp.c"
+    idf_component_register(SRCS "esp32_main.c" ${SHARED_SRCS}
                     INCLUDE_DIRS ".")
 endif()

@@ -48,14 +48,14 @@ void wifi_init(void) {
 
     wifi_config_t wifi_config = {
         .ap = {.ssid = WIFI_SSID,
-               .ssid_len = strlen(WIFI_SSID),
                .password = WIFI_PASS,
-               .max_connection = MAX_PEERS,
-               .authmode = WIFI_AUTH_WPA_WPA2_PSK},
+               .ssid_len = strlen(WIFI_SSID),
+               .authmode = WIFI_AUTH_WPA_WPA2_PSK,
+               .max_connection = MAX_PEERS},
     };
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_set_config((wifi_interface_t)ESP_IF_WIFI_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 

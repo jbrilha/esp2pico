@@ -186,15 +186,17 @@ void tcp_server_task(void *pvParameters) {
     LOG_INFO(TAG, "TCP server listening on port 8081");
 
     while (true) {
-        client_sock =
-            lwip_accept(listen_sock, (struct sockaddr *)&client_addr, &client_len);
+        client_sock = lwip_accept(listen_sock, (struct sockaddr *)&client_addr,
+                                  &client_len);
         if (client_sock < 0) {
             LOG_ERROR(TAG, "TCP accept failed");
             continue;
         }
 
-        tcp_client_context_t *rx_ctx = malloc(sizeof(tcp_client_context_t));
-        tcp_client_context_t *tx_ctx = malloc(sizeof(tcp_client_context_t));
+        tcp_client_context_t *rx_ctx =
+            (tcp_client_context_t *)malloc(sizeof(tcp_client_context_t));
+        tcp_client_context_t *tx_ctx =
+            (tcp_client_context_t *)malloc(sizeof(tcp_client_context_t));
 
         if (!rx_ctx || !tx_ctx) {
             LOG_ERROR(TAG, "Failed to allocate client context");
