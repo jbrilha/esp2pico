@@ -6,8 +6,7 @@
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
+#include "platform.h"
 
 #include "lwip/dns.h"
 #include "lwip/ip4_addr.h"
@@ -59,8 +58,8 @@ void wifi_connect_task(void *pvParameters) {
     printf("connected to AP\n");
     printf("IP: %s\n", ip4addr_ntoa(netif_ip4_addr(netif_list)));
 
-    xTaskCreate(udp_task, "udp_task", 2048, NULL, WORKER_TASK_PRIORITY, NULL);
-    xTaskCreate(tcp_task, "tcp_task", 2048, NULL, WORKER_TASK_PRIORITY, NULL);
+    xTaskCreate(udp_client_task, "udp_client", 2048, NULL, WORKER_TASK_PRIORITY, NULL);
+    xTaskCreate(tcp_client_task, "tcp_client", 2048, NULL, WORKER_TASK_PRIORITY, NULL);
 
     // this task is done, can kill itself
     vTaskDelete(NULL);

@@ -51,9 +51,9 @@ echo "export FREERTOS_KERNEL_PATH=~/FreeRTOS/FreeRTOS-Kernel/" >> ~/.bashrc
 ### For ESP32
 
 ``` bash
-cd esp32
+cd pico32
 # get_idf
-idf.py set-target esp32 # ors esp32s3, etc
+idf.py set-target esp32 # or esp32s3, etc
 idf.py build
 idf.py flash # idf.py -p PORT flash
 idf.py monitor # idf.py -p PORT monitor
@@ -61,12 +61,13 @@ idf.py monitor # idf.py -p PORT monitor
 
 ### For Pico W
 ``` bash
-cd pico
+cd pico32
 
+rm -rf build
 mkdir build
 cd build
 cmake ..
 make
 
-picotool load -f src/freertos_test.uf2
+picotool load -f src/pico32.uf2
 ```

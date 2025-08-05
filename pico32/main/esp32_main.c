@@ -6,9 +6,6 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "esp_wifi_types_generic.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/idf_additions.h"
-#include "freertos/task.h"
 #include "nvs_flash.h"
 #include "tcp.h"
 #include "udp.h"
@@ -24,8 +21,6 @@
 
 #define TCP_SERVER_TASK_STACK_SIZE 4096
 #define TCP_SERVER_TASK_PRIORITY 5
-
-static const char *TAG = "ESP32";
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
